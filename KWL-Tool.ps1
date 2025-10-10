@@ -1,10 +1,11 @@
 # KWL Tool  - Kusto Workspace Lab 
-# Version 2.0 - Enhanced with Azure Monitor Integration
+# Version 2.5 - Streamlined Architecture with Separate Functions File
 
 param(
     [string]$KustoEndpoint = "http://localhost:8080",
     [string]$DatabaseName = "NetDefaultDB",
-    [string]$ConfigPath = ".\tables.json",
+    [string]$TablesConfigPath = ".\AzureMonitorTables_Security.json",
+    [string]$FunctionsConfigPath = ".\functions.json",
     [string]$DataPath = ".\data",
     [string]$AzureMonitorScriptPath = ".\AzureMonitorTablesScraper.ps1"
 )
@@ -16,6 +17,8 @@ function Show-Banner {
     Write-Host "    Guiding Your Data Through the Cyber Seas" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "    Endpoint: $KustoEndpoint | Database: $DatabaseName" -ForegroundColor Yellow
+    Write-Host "    Tables: $TablesConfigPath" -ForegroundColor Gray
+    Write-Host "    Functions: $FunctionsConfigPath" -ForegroundColor Gray
     Write-Host ""
 }
 
@@ -78,21 +81,40 @@ function Test-KustoConnection {
     return $false
 }
 
+function Convert-AzureMonitorTypeToKusto {
+    param([string]$AzureType)
+    
+    # Map Azure Monitor types to Kusto types
+    switch -Regex ($AzureType.ToLower()) {
+        "^string$|^text$" { return "string" }
+        "^int$|^integer$" { return "int" }
+        "^long$" { return "long" }
+        "^real$|^double$|^float$" { return "real" }
+        "^datetime$|^timestamp$" { return "datetime" }
+        "^bool$|^boolean$" { return "bool" }
+        "^dynamic$|^json$" { return "dynamic" }
+        "^guid$|^uuid$" { return "guid" }
+        "^timespan$" { return "timespan" }
+        default { return "string" }
+    }
+}
+
 function Load-TableConfig {
+    param([string]$ConfigPath = $TablesConfigPath)
+    
     if (-not (Test-Path $ConfigPath)) {
-        Write-Host "  Configuration file not found: $ConfigPath" -ForegroundColor Red
-        Write-Host "  Run option 3 to create a configuration file" -ForegroundColor Yellow
+        Write-Host "  Table configuration file not found: $ConfigPath" -ForegroundColor Red
+        Write-Host "  Use Option 3 to download or specify a different file" -ForegroundColor Yellow
         return $null
     }
     
     try {
         $rawConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         
-        # Check if this is Azure Monitor format (has Categories property)
+        # Azure Monitor format (has Categories property)
         if ($rawConfig.PSObject.Properties.Name -contains "Categories") {
-            Write-Host "  Detected Azure Monitor format, converting..." -ForegroundColor Yellow
+            Write-Host "  Loading Azure Monitor table definitions from: $ConfigPath" -ForegroundColor Cyan
             
-            # Convert Azure Monitor format to KQL-Lighthouse format
             $tables = @()
             
             foreach ($category in $rawConfig.Categories.PSObject.Properties) {
@@ -119,26 +141,12 @@ function Load-TableConfig {
                 }
             }
             
-            $config = @{
-                tables = $tables
-                functions = @()
-                metadata = @{
-                    source = "Azure Monitor Reference"
-                    originalFormat = $true
-                }
-            }
-            
-            Write-Host "  Converted $($tables.Count) tables from Azure Monitor format" -ForegroundColor Green
-            return $config
-        }
-        # Standard format (has tables property)
-        elseif ($rawConfig.PSObject.Properties.Name -contains "tables") {
-            Write-Host "  Loaded configuration: $($rawConfig.tables.Count) tables defined" -ForegroundColor Green
-            return $rawConfig
+            Write-Host "  Loaded $($tables.Count) table definitions" -ForegroundColor Green
+            return $tables
         }
         else {
             Write-Host "  Unknown configuration format!" -ForegroundColor Red
-            Write-Host "  Expected 'tables' or 'Categories' property" -ForegroundColor Yellow
+            Write-Host "  Expected Azure Monitor format with 'Categories' property" -ForegroundColor Yellow
             return $null
         }
     }
@@ -148,182 +156,125 @@ function Load-TableConfig {
     }
 }
 
-function Convert-AzureMonitorTypeToKusto {
-    param([string]$AzureType)
+function Load-FunctionsConfig {
+    param([string]$ConfigPath = $FunctionsConfigPath)
     
-    # Map Azure Monitor types to Kusto types
-    switch -Regex ($AzureType.ToLower()) {
-        "^string$|^text$" { return "string" }
-        "^int$|^integer$" { return "int" }
-        "^long$" { return "long" }
-        "^real$|^double$|^float$" { return "real" }
-        "^datetime$|^timestamp$" { return "datetime" }
-        "^bool$|^boolean$" { return "bool" }
-        "^dynamic$|^json$" { return "dynamic" }
-        "^guid$|^uuid$" { return "guid" }
-        "^timespan$" { return "timespan" }
-        default { return "string" }
-    }
-}
-
-function Import-AzureMonitorJSON {
-    param([string]$JsonPath)
-    
-    Write-Host ""
-    Write-Host "  Importing Azure Monitor table definitions..." -ForegroundColor Cyan
-    
-    if (-not (Test-Path $JsonPath)) {
-        Write-Host "  File not found: $JsonPath" -ForegroundColor Red
-        return $null
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Host "  Functions configuration file not found: $ConfigPath" -ForegroundColor Yellow
+        Write-Host "  No custom functions will be deployed" -ForegroundColor Gray
+        return @()
     }
     
     try {
-        $azureData = Get-Content $JsonPath -Raw | ConvertFrom-Json
+        $rawConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         
-        $tables = @()
-        
-        foreach ($category in $azureData.Categories.PSObject.Properties) {
-            $categoryName = $category.Name
-            Write-Host "  Processing category: $categoryName" -ForegroundColor Yellow
-            
-            foreach ($table in $category.Value) {
-                Write-Host "    - $($table.TableName) ($($table.ColumnCount) columns)" -ForegroundColor Gray
-                
-                $schema = @()
-                foreach ($column in $table.Columns) {
-                    $kustoType = Convert-AzureMonitorTypeToKusto -AzureType $column.Type
-                    $schema += @{
-                        name = $column.Name
-                        type = $kustoType
-                        description = $column.Description
-                    }
-                }
-                
-                $tables += @{
-                    name = $table.TableName
-                    category = $categoryName
-                    schema = $schema
-                    source = "Azure Monitor"
-                    url = $table.Url
-                }
-            }
+        if ($rawConfig.PSObject.Properties.Name -contains "functions") {
+            Write-Host "  Loading KQL functions from: $ConfigPath" -ForegroundColor Cyan
+            Write-Host "  Loaded $($rawConfig.functions.Count) function definitions" -ForegroundColor Green
+            return $rawConfig.functions
         }
-        
-        Write-Host ""
-        Write-Host "  Successfully imported $($tables.Count) tables" -ForegroundColor Green
-        
-        return @{
-            tables = $tables
-            functions = @()
-            metadata = @{
-                source = "Azure Monitor Reference"
-                imported = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                originalFile = $JsonPath
-            }
+        else {
+            Write-Host "  Invalid functions.json format - expected 'functions' array" -ForegroundColor Red
+            return @()
         }
     }
     catch {
-        Write-Host "  Failed to parse Azure Monitor JSON: $($_.Exception.Message)" -ForegroundColor Red
-        return $null
+        Write-Host "  Failed to parse functions configuration: $($_.Exception.Message)" -ForegroundColor Red
+        return @()
     }
 }
 
 function Import-StandaloneTable {
     Show-Banner
     Write-Host ""
-    Write-Host "IMPORT STANDALONE TABLE DATA" -ForegroundColor Cyan
+    Write-Host "IMPORT TABLE CONFIGURATION" -ForegroundColor Cyan
     Write-Host "======================================" -ForegroundColor Cyan
     Write-Host ""
     
-    Write-Host "Select import source:" -ForegroundColor Yellow
+    Write-Host "Enter the path to your Azure Monitor JSON file" -ForegroundColor Yellow
+    Write-Host "Current: $TablesConfigPath" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  1 - Import from Azure Monitor JSON file" -ForegroundColor White
-    Write-Host "  2 - Browse for custom JSON file" -ForegroundColor White
-    Write-Host "  3 - Cancel" -ForegroundColor White
+    Write-Host "Press Enter to use current file, or specify a new path" -ForegroundColor Gray
     Write-Host ""
     
-    $choice = Read-Host "Enter choice"
+    $jsonPath = Read-Host "File path"
     
-    switch ($choice) {
-        "1" {
-            $defaultPath = ".\AzureMonitorTables_Security.json"
-            if (Test-Path $defaultPath) {
-                $jsonPath = $defaultPath
-            } else {
-                Write-Host ""
-                $jsonPath = Read-Host "Enter path to Azure Monitor JSON file"
-            }
+    # Use current if user just pressed Enter
+    if ([string]::IsNullOrWhiteSpace($jsonPath)) {
+        $jsonPath = $TablesConfigPath
+        Write-Host ""
+        Write-Host "  Using current configuration: $TablesConfigPath" -ForegroundColor Cyan
+    }
+    else {
+        # Update to new path
+        $script:TablesConfigPath = $jsonPath
+        Write-Host ""
+        Write-Host "  Configuration path updated to: $jsonPath" -ForegroundColor Cyan
+    }
+    
+    # Check if file exists
+    if (-not (Test-Path $jsonPath)) {
+        Write-Host ""
+        Write-Host "  ERROR: File not found at path: $jsonPath" -ForegroundColor Red
+        Write-Host "  Use Option 2 to download table definitions" -ForegroundColor Yellow
+        Write-Host ""
+        Pause
+        return
+    }
+    
+    # Validate the file
+    $tables = Load-TableConfig -ConfigPath $jsonPath
+    if ($null -eq $tables) {
+        Write-Host ""
+        Write-Host "  ERROR: Invalid Azure Monitor JSON format" -ForegroundColor Red
+        Write-Host ""
+        Pause
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "  SUCCESS: Loaded $($tables.Count) table definitions" -ForegroundColor Green
+    Write-Host ""
+    
+    # Offer to deploy immediately
+    $deploy = Read-Host "Deploy these tables to Kusto now? (Y/N)"
+    
+    if ($deploy -eq 'Y' -or $deploy -eq 'y') {
+        Write-Host ""
+        
+        if (-not (Test-KustoConnection)) {
+            Pause
+            return
+        }
+        
+        Write-Host ""
+        Write-Host "Deploying tables to Kusto..." -ForegroundColor Cyan
+        $successCount = 0
+        $failCount = 0
+        
+        foreach ($table in $tables) {
+            $columns = ($table.schema | ForEach-Object { "$($_.name): $($_.type)" }) -join ", "
+            $command = ".create-merge table $($table.name) ($columns)"
             
-            if (Test-Path $jsonPath) {
-                $importedConfig = Import-AzureMonitorJSON -JsonPath $jsonPath
-                
-                if ($null -ne $importedConfig) {
-                    Write-Host ""
-                    Write-Host "  Merge with existing config or replace?" -ForegroundColor Yellow
-                    Write-Host ""
-                    Write-Host "  1 - Merge (add new tables)" -ForegroundColor White
-                    Write-Host "  2 - Replace (overwrite tables.json)" -ForegroundColor White
-                    Write-Host "  3 - Cancel" -ForegroundColor White
-                    Write-Host ""
-                    
-                    $mergeChoice = Read-Host "Enter choice"
-                    
-                    if ($mergeChoice -eq "1") {
-                        # Merge with existing
-                        if (Test-Path $ConfigPath) {
-                            $existing = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-                            
-                            # Merge tables
-                            $allTables = @()
-                            $allTables += $existing.tables
-                            $allTables += $importedConfig.tables
-                            
-                            $importedConfig.tables = $allTables
-                            $importedConfig.functions = $existing.functions
-                        }
-                    }
-                    
-                    if ($mergeChoice -ne "3") {
-                        $importedConfig | ConvertTo-Json -Depth 10 | Out-File $ConfigPath -Encoding UTF8
-                        Write-Host ""
-                        Write-Host "  Configuration saved to $ConfigPath" -ForegroundColor Green
-                    }
-                }
-            } else {
-                Write-Host ""
-                Write-Host "  File not found!" -ForegroundColor Red
-            }
-        }
-        "2" {
-            Write-Host ""
-            $jsonPath = Read-Host "Enter path to JSON file"
+            $result = Invoke-KustoCommand -Command $command -Description "Creating/updating: $($table.name)"
             
-            if (Test-Path $jsonPath) {
-                try {
-                    $customConfig = Get-Content $jsonPath -Raw | ConvertFrom-Json
-                    $customConfig | ConvertTo-Json -Depth 10 | Out-File $ConfigPath -Encoding UTF8
-                    Write-Host ""
-                    Write-Host "  Configuration imported successfully!" -ForegroundColor Green
-                }
-                catch {
-                    Write-Host ""
-                    Write-Host "  Failed to import: $($_.Exception.Message)" -ForegroundColor Red
-                }
+            if ($result) {
+                $successCount++
             } else {
-                Write-Host ""
-                Write-Host "  File not found!" -ForegroundColor Red
+                $failCount++
             }
         }
-        "3" {
-            Write-Host ""
-            Write-Host "  Cancelled" -ForegroundColor Yellow
-        }
-        default {
-            Write-Host ""
-            Write-Host "  Invalid option" -ForegroundColor Red
+        
+        Write-Host ""
+        Write-Host "Deployment Summary:" -ForegroundColor Cyan
+        Write-Host "  Total tables: $($tables.Count)" -ForegroundColor White
+        Write-Host "  Success: $successCount" -ForegroundColor Green
+        if ($failCount -gt 0) {
+            Write-Host "  Failed: $failCount" -ForegroundColor Red
         }
     }
     
+    Write-Host ""
     Pause
 }
 
@@ -398,10 +349,8 @@ function Pull-AzureMonitorData {
     
     try {
         if ($choice -eq "4") {
-            # All categories
             & $AzureMonitorScriptPath -AllCategories -OutputFile $outputFile
         } elseif ($category) {
-            # Specific category
             & $AzureMonitorScriptPath -CategoryFilter $category -OutputFile $outputFile
         }
         
@@ -409,17 +358,57 @@ function Pull-AzureMonitorData {
             Write-Host ""
             Write-Host "  Download complete!" -ForegroundColor Green
             Write-Host "  Saved to: $outputFile" -ForegroundColor Cyan
+            
+            # Validate the downloaded file
+            $tables = Load-TableConfig -ConfigPath $outputFile
+            if ($null -eq $tables) {
+                Write-Host "  ERROR: Downloaded file is invalid" -ForegroundColor Red
+                Pause
+                return
+            }
+            
+            # Update active configuration
+            $script:TablesConfigPath = $outputFile
+            Write-Host ""
+            Write-Host "  Configuration updated to: $outputFile" -ForegroundColor Cyan
+            Write-Host "  Tables available: $($tables.Count)" -ForegroundColor Cyan
             Write-Host ""
             
-            $import = Read-Host "Import this data into tables.json now? (Y/N)"
+            # Offer to deploy immediately
+            $deploy = Read-Host "Deploy these tables to Kusto now? (Y/N)"
             
-            if ($import -eq 'Y' -or $import -eq 'y') {
-                $importedConfig = Import-AzureMonitorJSON -JsonPath $outputFile
+            if ($deploy -eq 'Y' -or $deploy -eq 'y') {
+                Write-Host ""
                 
-                if ($null -ne $importedConfig) {
-                    $importedConfig | ConvertTo-Json -Depth 10 | Out-File $ConfigPath -Encoding UTF8
-                    Write-Host ""
-                    Write-Host "  Configuration saved to $ConfigPath" -ForegroundColor Green
+                if (-not (Test-KustoConnection)) {
+                    Pause
+                    return
+                }
+                
+                Write-Host ""
+                Write-Host "Deploying tables to Kusto..." -ForegroundColor Cyan
+                $successCount = 0
+                $failCount = 0
+                
+                foreach ($table in $tables) {
+                    $columns = ($table.schema | ForEach-Object { "$($_.name): $($_.type)" }) -join ", "
+                    $command = ".create-merge table $($table.name) ($columns)"
+                    
+                    $result = Invoke-KustoCommand -Command $command -Description "Creating/updating: $($table.name)"
+                    
+                    if ($result) {
+                        $successCount++
+                    } else {
+                        $failCount++
+                    }
+                }
+                
+                Write-Host ""
+                Write-Host "Deployment Summary:" -ForegroundColor Cyan
+                Write-Host "  Total tables: $($tables.Count)" -ForegroundColor White
+                Write-Host "  Success: $successCount" -ForegroundColor Green
+                if ($failCount -gt 0) {
+                    Write-Host "  Failed: $failCount" -ForegroundColor Red
                 }
             }
         } else {
@@ -432,20 +421,58 @@ function Pull-AzureMonitorData {
         Write-Host "  Error running scraper: $($_.Exception.Message)" -ForegroundColor Red
     }
     
+    Write-Host ""
+    Pause
+}
+
+function Edit-FunctionsConfig {
+    Show-Banner
+    Write-Host ""
+    Write-Host "EDIT KQL FUNCTIONS" -ForegroundColor Cyan
+    Write-Host "======================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    if (-not (Test-Path $FunctionsConfigPath)) {
+        Write-Host "  Functions configuration not found: $FunctionsConfigPath" -ForegroundColor Yellow
+        Write-Host ""
+        $create = Read-Host "Create default functions.json file? (Y/N)"
+        
+        if ($create -eq 'Y' -or $create -eq 'y') {
+            Create-DefaultFunctionsConfig
+        } else {
+            Pause
+            return
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "  Opening functions configuration..." -ForegroundColor Cyan
+    
+    if (Get-Command code -ErrorAction SilentlyContinue) {
+        code $FunctionsConfigPath
+        Write-Host "  Opened in VS Code" -ForegroundColor Green
+    } elseif (Get-Command notepad -ErrorAction SilentlyContinue) {
+        notepad $FunctionsConfigPath
+        Write-Host "  Opened in Notepad" -ForegroundColor Green
+    } else {
+        Write-Host "  No text editor found (tried 'code' and 'notepad')" -ForegroundColor Red
+        Write-Host "  File location: $FunctionsConfigPath" -ForegroundColor Yellow
+    }
+    
     Pause
 }
 
 function Modify-Tables {
     Show-Banner
     Write-Host ""
-    Write-Host "MODIFY TABLES" -ForegroundColor Cyan
+    Write-Host "MODIFY CONFIGURATION" -ForegroundColor Cyan
     Write-Host "======================================" -ForegroundColor Cyan
     Write-Host ""
     
-    Write-Host "  1 - Import standalone table data" -ForegroundColor White
-    Write-Host "  2 - Pull down table data from Microsoft Azure Monitor Table reference" -ForegroundColor White
-    Write-Host "  3 - Edit existing" -ForegroundColor White
-    Write-Host "  4 - Create new file" -ForegroundColor White
+    Write-Host "  1 - Set table configuration file" -ForegroundColor White
+    Write-Host "  2 - Download tables from Microsoft Azure Monitor" -ForegroundColor White
+    Write-Host "  3 - Edit KQL functions (functions.json)" -ForegroundColor White
+    Write-Host "  4 - Create default functions.json" -ForegroundColor White
     Write-Host "  5 - Cancel" -ForegroundColor White
     Write-Host ""
     
@@ -454,26 +481,8 @@ function Modify-Tables {
     switch ($choice) {
         "1" { Import-StandaloneTable }
         "2" { Pull-AzureMonitorData }
-        "3" { 
-            if (Test-Path $ConfigPath) {
-                Write-Host ""
-                Write-Host "  Opening configuration file..." -ForegroundColor Cyan
-                if (Get-Command code -ErrorAction SilentlyContinue) {
-                    code $ConfigPath
-                    Write-Host "  Opened in VS Code" -ForegroundColor Green
-                } elseif (Get-Command notepad -ErrorAction SilentlyContinue) {
-                    notepad $ConfigPath
-                    Write-Host "  Opened in Notepad" -ForegroundColor Green
-                }
-                Pause
-            } else {
-                Write-Host ""
-                Write-Host "  Configuration file does not exist: $ConfigPath" -ForegroundColor Red
-                Write-Host "  Use option 4 to create a new file" -ForegroundColor Yellow
-                Pause
-            }
-        }
-        "4" { Create-DefaultConfig; Pause }
+        "3" { Edit-FunctionsConfig }
+        "4" { Create-DefaultFunctionsConfig; Pause }
         "5" { 
             Write-Host ""
             Write-Host "  Cancelled" -ForegroundColor Yellow
@@ -498,18 +507,27 @@ function Deploy-FirstTime {
         return
     }
     
-    $config = Load-TableConfig
-    if ($null -eq $config) {
+    # Load tables from Azure Monitor JSON
+    Write-Host ""
+    Write-Host "Loading table definitions..." -ForegroundColor Cyan
+    $tables = Load-TableConfig
+    if ($null -eq $tables) {
         Pause
         return
     }
     
+    # Load functions from functions.json
+    Write-Host ""
+    Write-Host "Loading KQL functions..." -ForegroundColor Cyan
+    $functions = Load-FunctionsConfig
+    
+    # Deploy tables
     Write-Host ""
     Write-Host "Creating/updating tables..." -ForegroundColor Cyan
     $successCount = 0
     $failCount = 0
     
-    foreach ($table in $config.tables) {
+    foreach ($table in $tables) {
         $columns = ($table.schema | ForEach-Object { "$($_.name): $($_.type)" }) -join ", "
         
         # Use .create-merge to create or update the table schema
@@ -524,12 +542,13 @@ function Deploy-FirstTime {
         }
     }
     
+    # Deploy functions
     Write-Host ""
-    Write-Host "Creating functions..." -ForegroundColor Cyan
+    Write-Host "Creating KQL functions..." -ForegroundColor Cyan
     $funcSuccessCount = 0
     $funcFailCount = 0
     
-    foreach ($func in $config.functions) {
+    foreach ($func in $functions) {
         $result = Invoke-KustoCommand -Command $func.definition -Description "Creating function: $($func.name)"
         
         if ($result) {
@@ -543,15 +562,17 @@ function Deploy-FirstTime {
     Write-Host "Deployment complete!" -ForegroundColor Green
     Write-Host ""
     Write-Host "Summary:" -ForegroundColor Cyan
-    Write-Host "  Tables processed: $($config.tables.Count)" -ForegroundColor White
+    Write-Host "  Tables processed: $($tables.Count)" -ForegroundColor White
     Write-Host "    - Success: $successCount" -ForegroundColor Green
     if ($failCount -gt 0) {
         Write-Host "    - Failed: $failCount" -ForegroundColor Red
     }
-    Write-Host "  Functions processed: $($config.functions.Count)" -ForegroundColor White
-    Write-Host "    - Success: $funcSuccessCount" -ForegroundColor Green
-    if ($funcFailCount -gt 0) {
-        Write-Host "    - Failed: $funcFailCount" -ForegroundColor Red
+    Write-Host "  Functions processed: $($functions.Count)" -ForegroundColor White
+    if ($functions.Count -gt 0) {
+        Write-Host "    - Success: $funcSuccessCount" -ForegroundColor Green
+        if ($funcFailCount -gt 0) {
+            Write-Host "    - Failed: $funcFailCount" -ForegroundColor Red
+        }
     }
     Write-Host ""
     
@@ -681,40 +702,27 @@ function Purge-AllData {
     Pause
 }
 
-function Create-DefaultConfig {
-    $functionDef = @'
-.create function SimulateFailedLogons() { range x from 1 to 100 step 1 | extend TimeGenerated = now() - (rand(168) * 1h) | extend Computer = strcat('WS-', tostring(toint(rand(50)) + 1)) | extend EventID = 4625 | extend Activity = 'Failed Logon' | extend Account = strcat('user', tostring(toint(rand(100))), '@company.com') | extend LogonType = toint(rand(5)) + 2 | extend SourceIP = strcat(tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1)) | extend DestinationIP = '10.0.0.5' | extend Process = 'winlogon.exe' | extend CommandLine = '' | project TimeGenerated, Computer, EventID, Activity, Account, LogonType, SourceIP, DestinationIP, Process, CommandLine }
-'@
-
-    $defaultConfig = @{
-        tables = @(
-            @{
-                name = "SecurityEvents"
-                schema = @(
-                    @{ name = "TimeGenerated"; type = "datetime" }
-                    @{ name = "Computer"; type = "string" }
-                    @{ name = "EventID"; type = "int" }
-                    @{ name = "Activity"; type = "string" }
-                    @{ name = "Account"; type = "string" }
-                    @{ name = "LogonType"; type = "int" }
-                    @{ name = "SourceIP"; type = "string" }
-                    @{ name = "DestinationIP"; type = "string" }
-                    @{ name = "Process"; type = "string" }
-                    @{ name = "CommandLine"; type = "string" }
-                )
-            }
-        )
+function Create-DefaultFunctionsConfig {
+    $defaultFunctions = @{
         functions = @(
             @{
                 name = "SimulateFailedLogons"
-                definition = $functionDef
+                description = "Generates 100 simulated failed logon events for testing"
+                category = "Security"
+                definition = ".create-or-alter function SimulateFailedLogons() { range x from 1 to 100 step 1 | extend TimeGenerated = now() - (rand(168) * 1h) | extend Computer = strcat('WS-', tostring(toint(rand(50)) + 1)) | extend EventID = 4625 | extend Activity = 'Failed Logon' | extend Account = strcat('user', tostring(toint(rand(100))), '@company.com') | extend LogonType = toint(rand(5)) + 2 | extend SourceIP = strcat(tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1), '.', tostring(toint(rand(254)) + 1)) | extend DestinationIP = '10.0.0.5' | extend Process = 'winlogon.exe' | extend CommandLine = '' | project TimeGenerated, Computer, EventID, Activity, Account, LogonType, SourceIP, DestinationIP, Process, CommandLine }"
             }
         )
+        metadata = @{
+            description = "KQL Functions for Kusto Workspace Lab"
+            version = "1.0"
+            created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        }
     }
     
-    $defaultConfig | ConvertTo-Json -Depth 10 | Out-File $ConfigPath -Encoding UTF8
+    $defaultFunctions | ConvertTo-Json -Depth 10 | Out-File $FunctionsConfigPath -Encoding UTF8
     Write-Host ""
-    Write-Host "  Default configuration created: $ConfigPath" -ForegroundColor Green
+    Write-Host "  Default functions configuration created: $FunctionsConfigPath" -ForegroundColor Green
+    Write-Host "  Functions defined: $($defaultFunctions.functions.Count)" -ForegroundColor Cyan
 }
 
 function Reset-DockerContainer {
@@ -824,7 +832,7 @@ function Show-Menu {
     
     Write-Host "  1 - Deploy for First Time" -ForegroundColor White
     Write-Host "  2 - Purge All Table Data" -ForegroundColor White
-    Write-Host "  3 - Modify tables" -ForegroundColor White
+    Write-Host "  3 - Modify Configuration" -ForegroundColor White
     Write-Host "  4 - Reset Docker Container" -ForegroundColor White
     Write-Host "  5 - Import CSV Data" -ForegroundColor White
     Write-Host "  6 - Exit" -ForegroundColor White
