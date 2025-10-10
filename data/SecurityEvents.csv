@@ -1,0 +1,21 @@
+TimeGenerated,Computer,EventID,Activity,Account,LogonType,SourceIP,DestinationIP,Process,CommandLine,SubjectUserName,TargetUserName,Status,Level
+2025-10-03T08:15:23Z,WS-001,4625,Failed Logon,admin@company.com,3,192.168.1.100,10.0.0.5,winlogon.exe,,SYSTEM,admin@company.com,0xC000006D,Warning
+2025-10-03T08:15:45Z,WS-001,4625,Failed Logon,admin@company.com,3,192.168.1.100,10.0.0.5,winlogon.exe,,SYSTEM,admin@company.com,0xC000006D,Warning
+2025-10-03T08:16:12Z,WS-001,4625,Failed Logon,admin@company.com,3,192.168.1.100,10.0.0.5,winlogon.exe,,SYSTEM,admin@company.com,0xC000006D,Warning
+2025-10-03T08:20:33Z,WS-002,4624,Successful Logon,john.doe@company.com,2,10.0.1.50,10.0.0.5,winlogon.exe,,john.doe@company.com,john.doe@company.com,0x0,Information
+2025-10-03T08:25:11Z,DC01,4720,User Account Created,jane.smith@company.com,3,10.0.1.25,10.0.0.10,,,Administrator,jane.smith@company.com,0x0,Information
+2025-10-03T08:30:22Z,WS-003,4688,Process Created,bob.jones@company.com,3,10.0.1.75,,powershell.exe,powershell.exe -enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0A,bob.jones@company.com,,0x0,Warning
+2025-10-03T08:35:45Z,WS-004,4624,Successful Logon,alice.williams@company.com,10,203.0.113.45,10.0.0.5,winlogon.exe,,alice.williams@company.com,alice.williams@company.com,0x0,Information
+2025-10-03T08:40:12Z,DC01,4728,Member Added to Security Group,,,10.0.1.25,10.0.0.10,,,Administrator,bob.jones@company.com,0x0,Information
+2025-10-03T08:45:33Z,WS-005,4625,Failed Logon,service_account@company.com,3,10.0.1.100,10.0.0.5,winlogon.exe,,SYSTEM,service_account@company.com,0xC000006D,Warning
+2025-10-03T08:50:22Z,WS-006,4688,Process Created,charlie.brown@company.com,2,10.0.1.80,,cmd.exe,cmd.exe /c whoami,charlie.brown@company.com,,0x0,Information
+2025-10-03T09:00:15Z,DC01,4732,Member Added to Security Group,,,10.0.1.25,10.0.0.10,,,Administrator,alice.williams@company.com,0x0,Information
+2025-10-03T09:05:44Z,WS-007,4624,Successful Logon,david.miller@company.com,3,10.0.1.90,10.0.0.5,winlogon.exe,,david.miller@company.com,david.miller@company.com,0x0,Information
+2025-10-03T09:10:11Z,WS-008,4688,Process Created,eve.davis@company.com,2,10.0.1.95,,powershell.exe,powershell.exe -ExecutionPolicy Bypass -File script.ps1,eve.davis@company.com,,0x0,Warning
+2025-10-03T09:15:33Z,WS-009,4625,Failed Logon,guest@company.com,3,192.168.1.150,10.0.0.5,winlogon.exe,,SYSTEM,guest@company.com,0xC000006D,Warning
+2025-10-03T09:20:55Z,WS-010,4624,Successful Logon,frank.wilson@company.com,10,203.0.113.100,10.0.0.5,winlogon.exe,,frank.wilson@company.com,frank.wilson@company.com,0x0,Information
+2025-10-03T09:25:12Z,DC01,4726,User Account Deleted,test_user@company.com,3,10.0.1.25,10.0.0.10,,,Administrator,test_user@company.com,0x0,Information
+2025-10-03T09:30:44Z,WS-011,4688,Process Created,grace.taylor@company.com,3,10.0.1.110,,net.exe,net use \\DC01\share,grace.taylor@company.com,,0x0,Information
+2025-10-03T09:35:22Z,WS-012,4625,Failed Logon,administrator@company.com,3,203.0.113.25,10.0.0.5,winlogon.exe,,SYSTEM,administrator@company.com,0xC000006D,Critical
+2025-10-03T09:40:11Z,WS-013,4624,Successful Logon,henry.anderson@company.com,2,10.0.1.120,10.0.0.5,winlogon.exe,,henry.anderson@company.com,henry.anderson@company.com,0x0,Information
+2025-10-03T09:45:33Z,DC01,1102,Security Log Cleared,,,10.0.1.25,10.0.0.10,,,Administrator,,0x0,Critical
