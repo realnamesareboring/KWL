@@ -1,16 +1,16 @@
-# Manage-Retention-NEW.ps1
-# Manages data retention and purging in Kusto Emulator
-# FINAL VERSION - Uses KWL-Tool.ps1 patterns
+# Manage-KustoRetention.ps1
+# Utility script for managing retention and purging in the Kusto Emulator
 
 param(
     [string]$KustoEndpoint = "http://localhost:8080",
     [string]$DatabaseName = "NetDefaultDB",
     [string]$TableName = "SecurityEvents",
-    [ValidateSet("SetPolicy", "PurgeOldData", "ShowStats", "RemovePolicy")]
+    [ValidateSet("SetPolicy", "PurgeOldData", "ShowStats", "RemovePolicy", "RestoreDefault")]
     [string]$Action = "ShowStats",
     [int]$RetentionDays = 0,
     [int]$RetentionHours = 0,
     [int]$RetentionMinutes = 0,
+    [switch]$UseDefault,
     [switch]$Force
 )
 
@@ -24,13 +24,22 @@ function Get-RetentionTimespan {
     $totalDays = $RetentionDays
     $totalHours = $RetentionHours
     $totalMinutes = $RetentionMinutes
-    
+
+    if ($UseDefault) {
+        $timespanString = "365.00:00:00"
+        return @{
+            Timespan      = $timespanString
+            TotalMinutes  = 365 * 24 * 60
+            DisplayString = "Default (365 day) retention"
+        }
+    }
+
     if ($totalDays -eq 0 -and $totalHours -eq 0 -and $totalMinutes -eq 0) {
         $totalDays = 1
     }
-    
+
     $timespanString = "$totalDays.$($totalHours.ToString('00')):$($totalMinutes.ToString('00')):00"
-    
+
     return @{
         Timespan = $timespanString
         TotalMinutes = ($totalDays * 24 * 60) + ($totalHours * 60) + $totalMinutes
@@ -40,37 +49,21 @@ function Get-RetentionTimespan {
     }
 }
 
-function Test-KustoConnection {
-    $testBody = @{db=$DatabaseName; csl=".show databases"} | ConvertTo-Json
-    
-    try {
-        $response = Invoke-RestMethod -Uri "$KustoEndpoint/v1/rest/query" -Method Post -Body $testBody -ContentType "application/json" -TimeoutSec 5 -ErrorAction Stop
-        return $true
-    }
-    catch {
-        Write-Host "  Connection failed: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
+function Invoke-KustoRequest {
+    param(
+        [string]$Path,
+        [hashtable]$Body,
+        [string]$ErrorContext,
+        [int]$TimeoutSec = 30
+    )
 
-function Invoke-KustoQuery {
-    param([string]$Query)
-    
-    # DEBUG: Show what we're sending
-    Write-Host "  [DEBUG] Query: $Query" -ForegroundColor DarkGray
-    
-    $body = @{
-        db = $DatabaseName
-        csl = $Query
-    } | ConvertTo-Json
-    
+    $jsonBody = $Body | ConvertTo-Json
+
     try {
-        # USE MGMT ENDPOINT FOR EVERYTHING (like KWL-Tool does!)
-        $response = Invoke-RestMethod -Uri "$KustoEndpoint/v1/rest/mgmt" -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
-        return $response
+        return Invoke-RestMethod -Uri "$KustoEndpoint$Path" -Method Post -Body $jsonBody -ContentType 'application/json' -TimeoutSec $TimeoutSec -ErrorAction Stop
     }
     catch {
-        Write-Host "    Query failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "    $ErrorContext failed: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.ErrorDetails.Message) {
             Write-Host "    Details: $($_.ErrorDetails.Message)" -ForegroundColor DarkRed
         }
@@ -78,22 +71,57 @@ function Invoke-KustoQuery {
     }
 }
 
+function Test-KustoConnection {
+    $testBody = @{ db = $DatabaseName; csl = ".show databases" }
+    $response = Invoke-KustoRequest -Path "/v1/rest/mgmt" -Body $testBody -ErrorContext "Connection test" -TimeoutSec 5
+    return [bool]$response
+}
+
+function Invoke-KustoQuery {
+    param([string]$Query)
+
+    Write-Host "  [DEBUG] Query: $Query" -ForegroundColor DarkGray
+
+    $body = @{ db = $DatabaseName; csl = $Query }
+    return Invoke-KustoRequest -Path "/v1/rest/query" -Body $body -ErrorContext "Query"
+}
+
 function Invoke-KustoMgmt {
     param([string]$Command)
-    
-    $body = @{
-        db = $DatabaseName
-        csl = $Command
-    } | ConvertTo-Json
-    
-    try {
-        $response = Invoke-RestMethod -Uri "$KustoEndpoint/v1/rest/mgmt" -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
-        return $response
-    }
-    catch {
-        Write-Host "    Command failed: $($_.Exception.Message)" -ForegroundColor Red
+
+    Write-Host "  [DEBUG] Command: $Command" -ForegroundColor DarkGray
+
+    $body = @{ db = $DatabaseName; csl = $Command }
+    return Invoke-KustoRequest -Path "/v1/rest/mgmt" -Body $body -ErrorContext "Command"
+}
+
+function Convert-KustoRowToObject {
+    param(
+        $Table,
+        [int]$RowIndex = 0
+    )
+
+    if (-not $Table -or $Table.Rows.Count -le $RowIndex) {
         return $null
     }
+
+    $row = $Table.Rows[$RowIndex]
+    $columns = $Table.Columns
+
+    $result = [ordered]@{}
+
+    for ($i = 0; $i -lt $columns.Count; $i++) {
+        $columnName = $columns[$i].ColumnName
+        if (-not $columnName) {
+            $columnName = $columns[$i].Name
+        }
+        if (-not $columnName) {
+            $columnName = "Column$i"
+        }
+        $result[$columnName] = $row[$i]
+    }
+
+    return [pscustomobject]$result
 }
 
 if (-not (Test-KustoConnection)) {
@@ -106,7 +134,7 @@ Write-Host "Database: $DatabaseName" -ForegroundColor Yellow
 Write-Host "Table: $TableName" -ForegroundColor Yellow
 Write-Host "Action: $Action" -ForegroundColor Yellow
 
-if ($Action -ne "ShowStats") {
+if ($Action -in @("SetPolicy", "PurgeOldData")) {
     $retention = Get-RetentionTimespan
     Write-Host "Retention: $($retention.DisplayString)" -ForegroundColor Yellow
 }
@@ -121,7 +149,6 @@ switch ($Action) {
         # Try using .show commands instead of queries
         Write-Host "Checking table extents..." -ForegroundColor Gray
         $extentsCmd = ".show table $TableName extents"
-        Write-Host "  [DEBUG] Command: $extentsCmd" -ForegroundColor DarkGray
         $extentsResult = Invoke-KustoMgmt -Command $extentsCmd
         
         if ($extentsResult -and $extentsResult.Tables[0].Rows.Count -gt 0) {
@@ -137,9 +164,8 @@ switch ($Action) {
         # Try a simple count using evaluate
         Write-Host ""
         Write-Host "Attempting row count..." -ForegroundColor Cyan
-        $countCmd = ".show table $TableName | count"
-        Write-Host "  [DEBUG] Command: $countCmd" -ForegroundColor DarkGray
-        $countResult = Invoke-KustoMgmt -Command $countCmd
+        $countCmd = "$TableName | count"
+        $countResult = Invoke-KustoQuery -Query $countCmd
         
         if ($countResult -and $countResult.Tables[0].Rows.Count -gt 0) {
             Write-Host "Count result received" -ForegroundColor Green
@@ -155,10 +181,27 @@ switch ($Action) {
         Write-Host "  [DEBUG] Command: $policyCommand" -ForegroundColor DarkGray
         $policyResult = Invoke-KustoMgmt -Command $policyCommand
         
-        if ($policyResult -and $policyResult.Tables[0].Rows.Count -gt 0) {
-            $policy = $policyResult.Tables[0].Rows[0][1] | ConvertFrom-Json
-            if ($policy.SoftDeletePeriod) {
-                Write-Host "  Soft delete period: $($policy.SoftDeletePeriod)" -ForegroundColor White
+        if ($policyResult -and $policyResult.Tables.Count -gt 0 -and $policyResult.Tables[0].Rows.Count -gt 0) {
+            $policyTable = $policyResult.Tables[0]
+            $policyRow = Convert-KustoRowToObject -Table $policyTable
+
+            $policyJson = $null
+            if ($policyRow.Policy -and $policyRow.Policy -ne 'null') {
+                $policyJson = $policyRow.Policy
+            } elseif ($policyRow.EffectivePolicy -and $policyRow.EffectivePolicy -ne 'null') {
+                $policyJson = $policyRow.EffectivePolicy
+            }
+
+            if ($policyJson) {
+                $policy = $policyJson | ConvertFrom-Json
+
+                if ($policy.SoftDeletePeriod) {
+                    Write-Host "  Soft delete period: $($policy.SoftDeletePeriod)" -ForegroundColor White
+                }
+
+                if ($policy.Recoverability) {
+                    Write-Host "  Recoverability: $($policy.Recoverability)" -ForegroundColor White
+                }
             } else {
                 Write-Host "  No retention policy set" -ForegroundColor Yellow
             }
@@ -166,7 +209,7 @@ switch ($Action) {
             Write-Host "  Could not retrieve retention policy" -ForegroundColor Yellow
         }
     }
-    
+
     "SetPolicy" {
         $retention = Get-RetentionTimespan
         
@@ -186,11 +229,15 @@ switch ($Action) {
         # Build policy command using simple concatenation
         $retentionTimespan = $retention.Timespan
         $tick = '`'
-        $policyJson = '{ "SoftDeletePeriod": "' + $retentionTimespan + '", "Recoverability": "Disabled" }'
+        if ($UseDefault) {
+            $policyJson = '{ "SoftDeletePeriod": "' + $retentionTimespan + '", "Recoverability": "Enabled" }'
+        } else {
+            $policyJson = '{ "SoftDeletePeriod": "' + $retentionTimespan + '", "Recoverability": "Disabled" }'
+        }
         $policyCommand = '.alter table ' + $TableName + ' policy retention ' + $tick + $policyJson + $tick
-        
+
         $result = Invoke-KustoMgmt -Command $policyCommand
-        
+
         if ($result) {
             $successMsg = "Retention policy set successfully"
             Write-Host $successMsg -ForegroundColor Green
@@ -280,6 +327,21 @@ switch ($Action) {
             Write-Host $successMsg -ForegroundColor Green
         }
     }
+
+    "RestoreDefault" {
+        Write-Host "Restoring retention policy to default..." -ForegroundColor Cyan
+
+        $defaultPolicy = '{ "SoftDeletePeriod": "365.00:00:00", "Recoverability": "Enabled" }'
+        $tick = '`'
+        $policyCommand = '.alter table ' + $TableName + ' policy retention ' + $tick + $defaultPolicy + $tick
+
+        $result = Invoke-KustoMgmt -Command $policyCommand
+
+        if ($result) {
+            Write-Host "Retention policy restored to default (365 days, Recoverability Enabled)" -ForegroundColor Green
+        }
+    }
 }
 
 Write-Host ""
+
