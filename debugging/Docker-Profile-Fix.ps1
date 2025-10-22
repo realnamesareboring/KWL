@@ -26,25 +26,23 @@ Write-Host "Step 1: Adding user to docker-users group..." -ForegroundColor Yello
 
 $userName = $env:USERNAME
 try {
-    # Try PowerShell method first
     Add-LocalGroupMember -Group "docker-users" -Member $userName -ErrorAction Stop
-    Write-Host "  ✓ Added $userName to docker-users group (PowerShell)" -ForegroundColor Green
+    Write-Host "  [SUCCESS] Added $userName to docker-users group (PowerShell)" -ForegroundColor Green
 }
 catch {
     if ($_.Exception.Message -like "*already a member*") {
-        Write-Host "  ✓ $userName already in docker-users group" -ForegroundColor Green
+        Write-Host "  [OK] $userName already in docker-users group" -ForegroundColor Green
     }
     else {
-        # Try net command as fallback
         $result = net localgroup docker-users $userName /add 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ Added $userName to docker-users group (net command)" -ForegroundColor Green
+            Write-Host "  [SUCCESS] Added $userName to docker-users group (net command)" -ForegroundColor Green
         }
         elseif ($LASTEXITCODE -eq 2) {
-            Write-Host "  ✓ $userName already in docker-users group" -ForegroundColor Green
+            Write-Host "  [OK] $userName already in docker-users group" -ForegroundColor Green
         }
         else {
-            Write-Host "  ✗ Failed to add user to group" -ForegroundColor Red
+            Write-Host "  [ERROR] Failed to add user to group" -ForegroundColor Red
         }
     }
 }
@@ -56,10 +54,10 @@ try {
     Stop-Process -Name "Docker Desktop" -Force -ErrorAction SilentlyContinue
     Stop-Service -Name "com.docker.service" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
-    Write-Host "  ✓ Docker Desktop stopped" -ForegroundColor Green
+    Write-Host "  [SUCCESS] Docker Desktop stopped" -ForegroundColor Green
 }
 catch {
-    Write-Host "  ! Docker may already be stopped" -ForegroundColor Yellow
+    Write-Host "  [INFO] Docker may already be stopped" -ForegroundColor Yellow
 }
 
 # Step 3: Configure settings.json
@@ -69,14 +67,12 @@ Write-Host "Step 3: Configuring Docker settings..." -ForegroundColor Yellow
 $dockerConfigDir = "$env:APPDATA\Docker"
 if (-not (Test-Path $dockerConfigDir)) {
     New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
-    Write-Host "  ✓ Created Docker config directory" -ForegroundColor Green
+    Write-Host "  [SUCCESS] Created Docker config directory" -ForegroundColor Green
 }
 
 $settingsPath = "$dockerConfigDir\settings.json"
 
-# Comprehensive settings to bypass ALL onboarding
 $defaultSettings = @{
-    # Core bypass settings
     "autoStart" = $false
     "openUIOnStartupMode" = 0
     "showWeeklyTips" = $false
@@ -85,8 +81,6 @@ $defaultSettings = @{
     "licenseTermsVersion" = 2
     "analyticsEnabled" = $false
     "checkForUpdates" = $false
-    
-    # Sign-in bypass settings
     "skipOnboardingSignIn" = $true
     "skipSignIn" = $true
     "showSignInPrompt" = $false
@@ -94,13 +88,9 @@ $defaultSettings = @{
     "enableSignIn" = $false
     "displayedWelcome" = $true
     "hasSeenOnboarding" = $true
-    
-    # Backend configuration
     "useWSL2" = $true
     "backend" = "wsl-2"
     "wslEngineEnabled" = $true
-    
-    # Additional bypass flags
     "skipOnboardingSurvey" = $true
     "dismissedOnboardingSurvey" = $true
     "showOnboardingOnStartup" = $false
@@ -111,68 +101,69 @@ $defaultSettings = @{
     "tosAccepted" = $true
     "privacyPolicyAccepted" = $true
     "marketingOptIn" = $false
-    
-    # Resource settings
     "memoryMiB" = 2048
     "cpus" = 2
     "diskSizeMiB" = 65536
-    
-    # Disable telemetry
     "allowCollectingBrowserUsage" = $false
     "allowCollectingKubernetesUsage" = $false
     "allowCollectingUsageStatistics" = $false
     "sendUsageStatistics" = $false
-    
-    # Docker Hub settings
     "showDockerHubTour" = $false
     "skipDockerHubLogin" = $true
     "dockerHubUsername" = ""
-    
-    # Version tracking
     "settingsVersion" = 24
     "currentVersion" = "4.0.0"
     "configurationVersion" = 1
-    
-    # Additional control settings
     "allowExperimentalFeatures" = $false
     "displayRestartDialog" = $false
     "showSystemContainers" = $false
     "exposeDockerAPIOnTCP2375" = $false
 }
 
-# Save settings
-$settingsJson = $defaultSettings | ConvertTo-Json -Depth 10
-$settingsJson | Out-File -FilePath $settingsPath -Encoding UTF8 -Force
-Write-Host "  ✓ Created comprehensive settings.json" -ForegroundColor Green
+try {
+    $settingsJson = $defaultSettings | ConvertTo-Json -Depth 10
+    $settingsJson | Out-File -FilePath $settingsPath -Encoding UTF8 -Force
+    Write-Host "  [SUCCESS] Created comprehensive settings.json" -ForegroundColor Green
+}
+catch {
+    Write-Host "  [ERROR] Failed to create settings.json: $($_.Exception.Message)" -ForegroundColor Red
+}
 
 # Step 4: Apply registry settings
 Write-Host ""
 Write-Host "Step 4: Applying registry settings..." -ForegroundColor Yellow
 
-$dockerRegPath = "HKCU:\Software\Docker Inc.\Docker Desktop"
-if (-not (Test-Path $dockerRegPath)) {
-    New-Item -Path $dockerRegPath -Force | Out-Null
+try {
+    $dockerRegPath = "HKCU:\Software\Docker Inc.\Docker Desktop"
+    if (-not (Test-Path $dockerRegPath)) {
+        New-Item -Path $dockerRegPath -Force | Out-Null
+    }
+    Set-ItemProperty -Path $dockerRegPath -Name "SkipOnboarding" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $dockerRegPath -Name "OnboardingCompleted" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $dockerRegPath -Name "FirstRun" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $dockerRegPath -Name "ShowSignInPrompt" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    Write-Host "  [SUCCESS] Applied registry bypass settings" -ForegroundColor Green
 }
-
-# Set registry values
-Set-ItemProperty -Path $dockerRegPath -Name "SkipOnboarding" -Value 1 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $dockerRegPath -Name "OnboardingCompleted" -Value 1 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $dockerRegPath -Name "FirstRun" -Value 0 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path $dockerRegPath -Name "ShowSignInPrompt" -Value 0 -Type DWord -ErrorAction SilentlyContinue
-
-Write-Host "  ✓ Applied registry bypass settings" -ForegroundColor Green
+catch {
+    Write-Host "  [ERROR] Failed to apply registry settings: $($_.Exception.Message)" -ForegroundColor Red
+}
 
 # Step 5: Remove auto-start
 Write-Host ""
 Write-Host "Step 5: Disabling auto-start..." -ForegroundColor Yellow
 
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-if (Get-ItemProperty -Path $runKey -Name "Docker Desktop" -ErrorAction SilentlyContinue) {
-    Remove-ItemProperty -Path $runKey -Name "Docker Desktop" -ErrorAction SilentlyContinue
-    Write-Host "  ✓ Removed Docker from auto-start" -ForegroundColor Green
+try {
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (Get-ItemProperty -Path $runKey -Name "Docker Desktop" -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $runKey -Name "Docker Desktop" -ErrorAction SilentlyContinue
+        Write-Host "  [SUCCESS] Removed Docker from auto-start" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  [OK] Docker auto-start already disabled" -ForegroundColor Green
+    }
 }
-else {
-    Write-Host "  ✓ Docker auto-start already disabled" -ForegroundColor Green
+catch {
+    Write-Host "  [ERROR] Failed to disable auto-start: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 # Step 6: Final instructions
